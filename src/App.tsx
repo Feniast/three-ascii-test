@@ -4,22 +4,25 @@ import React, {
   useEffect,
   useLayoutEffect,
   Suspense,
-} from "react";
+  useMemo,
+  useCallback,
+} from 'react';
 import {
   Canvas,
   useFrame,
   useThree,
   extend,
   useUpdate,
-} from "react-three-fiber";
-import * as THREE from "three";
-import { OrbitControls, shaderMaterial, useTextureLoader } from "drei";
-import vertex from "./shader/vertex.glsl";
-import fragment from "./shader/fragment.glsl";
-import * as dat from "dat.gui";
-import { useDeepMemo, useDeepCompareEffect } from "./useDeep";
-import charsMap from "url:./assets/chars.png";
-import { PlaneBufferGeometry } from "three";
+} from 'react-three-fiber';
+import * as THREE from 'three';
+import { OrbitControls, shaderMaterial, useTextureLoader } from 'drei';
+import vertex from './shader/vertex.glsl';
+import fragment from './shader/fragment.glsl';
+import * as dat from 'dat.gui';
+import { useDeepMemo, useDeepCompareEffect } from './useDeep';
+import charsMap from 'url:./assets/chars.png';
+import myVideo from 'url:./assets/leonardo.mp4';
+import { PlaneBufferGeometry, BufferAttribute } from 'three';
 
 const AsciiMaterial = shaderMaterial(
   {
@@ -58,20 +61,20 @@ void main() {
 
 extend({
   AsciiMaterial,
-  TestMaterial
+  TestMaterial,
 });
 
 interface DatGuiSetting {
   value: string | number | undefined;
-  type?: "color" | undefined;
+  type?: 'color' | undefined;
   min?: number;
   max?: number;
   step?: number;
 }
 
 const useDatGui = <T extends Record<string, DatGuiSetting>>(settings: T) => {
-  const obj = useDeepMemo<Record<keyof T, DatGuiSetting["value"]>>(() => {
-    const o = {} as Record<keyof T, DatGuiSetting["value"]>;
+  const obj = useDeepMemo<Record<keyof T, DatGuiSetting['value']>>(() => {
+    const o = {} as Record<keyof T, DatGuiSetting['value']>;
     Object.keys(settings).forEach((key) => {
       const setting = settings[key];
       const { value } = setting;
@@ -85,7 +88,7 @@ const useDatGui = <T extends Record<string, DatGuiSetting>>(settings: T) => {
     Object.keys(settings).forEach((key) => {
       const setting = settings[key];
       const { type, min, max, step } = setting;
-      if (type === "color") {
+      if (type === 'color') {
         inst.addColor(obj, key);
       } else {
         inst.add(obj, key, min, max, step);
@@ -99,11 +102,83 @@ const useDatGui = <T extends Record<string, DatGuiSetting>>(settings: T) => {
   return obj;
 };
 
-const size = 100;
+const size = 50;
 const cellSize = 1;
+
+const grayscale = (r: number, g: number, b: number) =>
+  0.299 * r + 0.587 * g + 0.114 * b;
+
+interface useCaptureFrameOptions {
+  width?: number;
+  height?: number;
+  loop?: boolean;
+}
+
+const useCaptureFrame = (
+  videoSrc: string,
+  options: useCaptureFrameOptions = {}
+) => {
+  const video = useMemo(() => document.createElement('video'), []);
+  const canvas = useMemo(() => document.createElement('canvas'), []);
+  const dimensionsSet = useRef(false);
+  const ready = useRef(false);
+  const { width, height, loop = true } = options;
+  useLayoutEffect(() => {
+    video.loop = true;
+  }, [loop]);
+  useLayoutEffect(() => {
+    video.src = videoSrc;
+    ready.current = false;
+    const onCanPlay = () => {
+      if (!dimensionsSet.current) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        dimensionsSet.current = true;
+      }
+      ready.current = true;
+      video.play();
+    };
+    video.addEventListener('canplaythrough', onCanPlay);
+
+    return () => {
+      video.removeEventListener('canplaythrough', onCanPlay);
+    };
+  }, [videoSrc]);
+
+  useLayoutEffect(() => {
+    let w = width,
+      h = height;
+    if (!w && !h) return;
+    if (w && !h) {
+      h = w;
+    }
+    if (h && !w) {
+      w = h;
+    }
+    if (canvas.width !== w) {
+      canvas.width = w;
+    }
+    if (canvas.height !== h) {
+      canvas.height = h;
+    }
+    dimensionsSet.current = true;
+  }, [width, height]);
+
+  return useCallback((onCapture: (data: ImageData) => void) => {
+    if (!ready.current) return;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    onCapture(imageData);
+  }, []);
+};
 
 const Test = () => {
   const { clock } = useThree();
+  const capture = useCaptureFrame(myVideo, {
+    width: size,
+    height: size,
+  });
   const chars = useTextureLoader(charsMap) as THREE.Texture;
   const mesh = useUpdate<THREE.InstancedMesh>(() => {
     if (!mesh.current) return;
@@ -114,7 +189,7 @@ const Test = () => {
       for (let j = 0; j < size; j++) {
         dummy.position.set(
           cellSize * j - cellSize * size * 0.5,
-          cellSize * i - cellSize * size * 0.5,
+          -(cellSize * i - cellSize * size * 0.5),
           0
         );
         dummy.updateMatrix();
@@ -122,13 +197,31 @@ const Test = () => {
         mesh.current.setMatrixAt(count++, dummy.matrix);
       }
     }
-    (mesh.current.geometry as PlaneBufferGeometry).addAttribute('instanceScale', new THREE.InstancedBufferAttribute(scales, 1));
+    (mesh.current.geometry as PlaneBufferGeometry).setAttribute(
+      'instanceScale',
+      new THREE.InstancedBufferAttribute(scales, 1)
+    );
     mesh.current.instanceMatrix.needsUpdate = true;
   }, []);
 
   useFrame(() => {
     (mesh.current.material as THREE.ShaderMaterial).uniforms.time.value =
       clock.elapsedTime;
+    capture((frame) => {
+      const scales = new Float32Array(size ** 2);
+      for (let i = 0; i < frame.data.length; i += 4) {
+        const d = grayscale(
+          frame.data[i],
+          frame.data[i + 1],
+          frame.data[i + 2]
+        );
+        scales.set([d / 255], i / 4);
+      }
+      ((mesh.current.geometry as PlaneBufferGeometry).attributes
+        .instanceScale as BufferAttribute).array = scales;
+      (mesh.current
+        .geometry as PlaneBufferGeometry).attributes.instanceScale.needsUpdate = true;
+    });
   });
   return (
     <>
@@ -175,7 +268,7 @@ const CameraSet = () => {
       -1000,
       1000
     );
-    camera.zoom = 6;
+    camera.zoom = 4;
     camera.position.set(0, 0, 2);
     setDefaultCamera(camera);
   }, [aspect]);
