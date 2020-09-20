@@ -28,6 +28,8 @@ const AsciiMaterial = shaderMaterial(
   {
     chars: null,
     time: 0,
+    canvas: null,
+    dimensions: new THREE.Vector2(0, 0)
   },
   vertex,
   fragment,
@@ -102,7 +104,7 @@ const useDatGui = <T extends Record<string, DatGuiSetting>>(settings: T) => {
   return obj;
 };
 
-const size = 50;
+const size = 128;
 const cellSize = 1;
 
 const grayscale = (r: number, g: number, b: number) =>
@@ -164,18 +166,62 @@ const useCaptureFrame = (
     dimensionsSet.current = true;
   }, [width, height]);
 
-  return useCallback((onCapture: (data: ImageData) => void) => {
+  const capture = useCallback((onCapture: (data: ImageData) => void) => {
     if (!ready.current) return;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     onCapture(imageData);
   }, []);
+
+  return {
+    video,
+    capture
+  }
+};
+
+const useCanvasTexture = (options?: {
+  width?: number;
+  height?: number;
+}): [
+  THREE.CanvasTexture,
+  (updateFn: (canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D) => void) => void
+] => {
+  const canvas = useMemo(() => document.createElement('canvas'), []);
+  const ctx = useMemo(() => canvas.getContext('2d'), [canvas]);
+  const texture = useMemo(() => new THREE.CanvasTexture(canvas), [canvas]);
+
+  const { width, height } = options || {};
+
+  useLayoutEffect(() => {
+    if (width) {
+      canvas.width = width;
+    }
+    if (height) {
+      canvas.height = height;
+    }
+  }, [width, height]);
+
+  const update = useCallback(
+    (
+      updateFn: (
+        canvas: HTMLCanvasElement,
+        ctx: CanvasRenderingContext2D
+      ) => void
+    ) => {
+      updateFn(canvas, ctx);
+      texture.needsUpdate = true;
+    },
+    [texture]
+  );
+
+  return [texture, update];
 };
 
 const Test = () => {
   const { clock } = useThree();
-  const capture = useCaptureFrame(myVideo, {
+  const dimensions = useMemo(() => new THREE.Vector2(size, size), []);
+  const {capture, video} = useCaptureFrame(myVideo, {
     width: size,
     height: size,
   });
@@ -204,25 +250,35 @@ const Test = () => {
     mesh.current.instanceMatrix.needsUpdate = true;
   }, []);
 
+  const [canvasTexture, updateCanvas] = useCanvasTexture({
+    width: 1024,
+    height: 1024
+  });
   useFrame(() => {
     (mesh.current.material as THREE.ShaderMaterial).uniforms.time.value =
       clock.elapsedTime;
     capture((frame) => {
       const scales = new Float32Array(size ** 2);
       for (let i = 0; i < frame.data.length; i += 4) {
-        const d = grayscale(
+        let d = grayscale(
           frame.data[i],
           frame.data[i + 1],
           frame.data[i + 2]
         );
+        // let d = frame.data[i];
+        d = 255 - d;
         scales.set([d / 255], i / 4);
       }
       ((mesh.current.geometry as PlaneBufferGeometry).attributes
         .instanceScale as BufferAttribute).array = scales;
       (mesh.current
         .geometry as PlaneBufferGeometry).attributes.instanceScale.needsUpdate = true;
+      updateCanvas((canvas, ctx) => {
+        ctx.drawImage(video, 0, 0, 1024, 1024);
+      });
     });
   });
+
   return (
     <>
       <instancedMesh
@@ -237,25 +293,15 @@ const Test = () => {
           attach="material"
           side={THREE.DoubleSide}
           chars={chars}
+          canvas={canvasTexture}
+          dimensions={dimensions}
         />
       </instancedMesh>
-      {/* <mesh scale={[100, 100, 100]}>
-        <planeBufferGeometry
-          attach="geometry"
-          args={[1, 1]}
-        ></planeBufferGeometry>
-        <testMaterial
-          transparent
-          attach="material"
-          side={THREE.DoubleSide}
-          chars={chars}
-        />
-      </mesh> */}
     </>
   );
 };
 
-const frustumSize = 800;
+const frustumSize = 2;
 
 const CameraSet = () => {
   const { aspect, setDefaultCamera } = useThree();
@@ -268,7 +314,7 @@ const CameraSet = () => {
       -1000,
       1000
     );
-    camera.zoom = 4;
+    camera.zoom = 2;
     camera.position.set(0, 0, 2);
     setDefaultCamera(camera);
   }, [aspect]);
